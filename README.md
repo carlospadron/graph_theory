@@ -5,4 +5,5 @@ Research and Development on graph theory issues.
 - data: os open roads, os open uprn
 - build spatial graph
 - dbscan clustering
-- optimisation with reinforcement learning or other methods
+- optimisation with rust written algorithms
+- optimisation with reinforcement learning 
