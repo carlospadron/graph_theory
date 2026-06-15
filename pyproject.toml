@@ -8,3 +8,6 @@ dependencies = [
     "duckdb>=1.5.3",
     "networkx>=3.6.1",
 ]
+
+[project.scripts]
+extract-routes = "graph_theory.extract_routes:main"
