@@ -9,7 +9,9 @@ Research and Development on graph theory issues.
 
 
 # TODO
-- data: os open roads, os open uprn. Preferably a dataset ready for routing
+- visualise routes
+- data buildings
+- split segments
 - build spatial graph
 - dbscan clustering
 - optimisation with rust written algorithms
