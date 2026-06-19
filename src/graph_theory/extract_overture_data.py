@@ -127,5 +127,36 @@ def extract_building_centroids() -> None:
     print(f"  - {gpkg_path} (GeoPackage)")
 
 
+def building_centroid_to_nearest_connector() -> None:
+    import geopandas as gpd
+
+    print("Reading building centroids and connectors from parquet...")
+    centroids = gpd.read_parquet("data/oxford_building_centroids.parquet")
+    connectors = gpd.read_parquet("data/oxford_connectors.parquet")
+
+    # Use a projected CRS so nearest distance is computed in metres.
+    centroids = centroids.to_crs("EPSG:3857")
+    connectors = connectors.to_crs("EPSG:3857")
+
+    print(f"  {len(centroids):,} centroids  |  {len(connectors):,} connectors")
+    print("Running sjoin_nearest...")
+
+    result = (
+        centroids[["id", "geometry"]]
+        .sjoin_nearest(
+            connectors[["id", "geometry"]],
+            how="left",
+            distance_col="distance_m",
+        )
+        .rename(columns={"id_left": "building_id", "id_right": "connector_id"})
+        .drop_duplicates(subset="building_id")[["building_id", "connector_id", "distance_m"]]
+        .reset_index(drop=True)
+    )
+
+    out_path = "data/building_to_connector.parquet"
+    result.to_parquet(out_path, index=False)
+    print(f"Saved {len(result):,} rows to {out_path}")
+
+
 if __name__ == "__main__":
     extract_routes()

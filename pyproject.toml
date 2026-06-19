@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "duckdb>=1.5.3",
+    "geopandas>=1.0.0",
     "networkx>=3.6.1",
+    "pyarrow>=20.0.0",
 ]
 
 [project.scripts]
@@ -14,6 +16,7 @@ extract-routes = "graph_theory.extract_overture_data:extract_routes"
 extract-connectors = "graph_theory.extract_overture_data:extract_connectors"
 extract-buildings = "graph_theory.extract_overture_data:extract_buildings"
 extract-building-centroids = "graph_theory.extract_overture_data:extract_building_centroids"
+building-to-connector = "graph_theory.extract_overture_data:building_centroid_to_nearest_connector"
 
 [tool.uv]
 package = true
