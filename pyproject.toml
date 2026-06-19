@@ -10,4 +10,13 @@ dependencies = [
 ]
 
 [project.scripts]
-extract-routes = "graph_theory.extract_routes:main"
+extract-routes = "graph_theory.extract_overture_data:extract_routes"
+extract-buildings = "graph_theory.extract_overture_data:extract_buildings"
+extract-building-centroids = "graph_theory.extract_overture_data:extract_building_centroids"
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
