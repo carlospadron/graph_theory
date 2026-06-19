@@ -5,7 +5,13 @@ BBOX = {"ymin": 51.5835, "ymax": 51.8528, "xmin": -1.4973, "xmax": -0.9893}
 
 SOURCES = {
     "segments": "s3://overturemaps-us-west-2/release/2026-05-20.0/theme=transportation/type=segment/*",
+    "connectors": "s3://overturemaps-us-west-2/release/2026-05-20.0/theme=transportation/type=connector/*",
     "buildings": "s3://overturemaps-us-west-2/release/2026-06-17.0/theme=buildings/type=building/*",
+}
+
+_SIMPLE_TYPES = {
+    "VARCHAR", "TEXT", "INTEGER", "BIGINT", "HUGEINT", "SMALLINT", "TINYINT",
+    "DOUBLE", "FLOAT", "REAL", "BOOLEAN", "DATE", "TIMESTAMP", "BLOB",
 }
 
 
@@ -16,6 +22,21 @@ def _setup_conn() -> duckdb.DuckDBPyConnection:
         conn.execute(f"LOAD {ext}")
     conn.execute("SET s3_region='us-west-2'")
     return conn
+
+
+def _gpkg_select(conn: duckdb.DuckDBPyConnection, table: str) -> str:
+    """Return a SELECT that casts complex columns (struct/array/map) to VARCHAR."""
+    rows = conn.execute(f"DESCRIBE {table}").fetchall()
+    cols = []
+    for col_name, col_type, *_ in rows:
+        upper = col_type.upper()
+        is_geometry = upper.startswith("GEOMETRY")
+        is_simple = any(upper == t or upper.startswith(t + "(") for t in _SIMPLE_TYPES)
+        if is_geometry or is_simple:
+            cols.append(f'"{col_name}"')
+        else:
+            cols.append(f'CAST("{col_name}" AS VARCHAR) AS "{col_name}"')
+    return f"SELECT {', '.join(cols)} FROM {table}"
 
 
 def extract(name: str, s3_path: str) -> None:
@@ -47,7 +68,7 @@ def extract(name: str, s3_path: str) -> None:
 
     print("Exporting to GeoPackage format...")
     conn.execute(
-        f"COPY data TO '{gpkg_path}' WITH (FORMAT GDAL, DRIVER 'GPKG');"
+        f"COPY ({_gpkg_select(conn, 'data')}) TO '{gpkg_path}' WITH (FORMAT GDAL, DRIVER 'GPKG');"
     )
 
     print(f"Data exported successfully to:")
@@ -57,6 +78,10 @@ def extract(name: str, s3_path: str) -> None:
 
 def extract_routes() -> None:
     extract("segments", SOURCES["segments"])
+
+
+def extract_connectors() -> None:
+    extract("connectors", SOURCES["connectors"])
 
 
 def extract_buildings() -> None:
@@ -94,7 +119,7 @@ def extract_building_centroids() -> None:
 
     print("Exporting to GeoPackage format...")
     conn.execute(
-        f"COPY data TO '{gpkg_path}' WITH (FORMAT GDAL, DRIVER 'GPKG');"
+        f"COPY ({_gpkg_select(conn, 'data')}) TO '{gpkg_path}' WITH (FORMAT GDAL, DRIVER 'GPKG');"
     )
 
     print("Data exported successfully to:")

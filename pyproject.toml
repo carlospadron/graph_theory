@@ -11,6 +11,7 @@ dependencies = [
 
 [project.scripts]
 extract-routes = "graph_theory.extract_overture_data:extract_routes"
+extract-connectors = "graph_theory.extract_overture_data:extract_connectors"
 extract-buildings = "graph_theory.extract_overture_data:extract_buildings"
 extract-building-centroids = "graph_theory.extract_overture_data:extract_building_centroids"
 
