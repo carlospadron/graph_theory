@@ -71,7 +71,7 @@ def extract(name: str, s3_path: str) -> None:
         f"COPY ({_gpkg_select(conn, 'data')}) TO '{gpkg_path}' WITH (FORMAT GDAL, DRIVER 'GPKG');"
     )
 
-    print(f"Data exported successfully to:")
+    print("Data exported successfully to:")
     print(f"  - {parquet_path} (GeoParquet)")
     print(f"  - {gpkg_path} (GeoPackage)")
 
@@ -129,6 +129,7 @@ def extract_building_centroids() -> None:
 
 def building_centroid_to_nearest_connector() -> None:
     import geopandas as gpd
+    from shapely.geometry import LineString
 
     print("Reading building centroids and connectors from parquet...")
     centroids = gpd.read_parquet("data/oxford_building_centroids.parquet")
@@ -141,7 +142,7 @@ def building_centroid_to_nearest_connector() -> None:
     print(f"  {len(centroids):,} centroids  |  {len(connectors):,} connectors")
     print("Running sjoin_nearest...")
 
-    result = (
+    nearest = (
         centroids[["id", "geometry"]]
         .sjoin_nearest(
             connectors[["id", "geometry"]],
@@ -149,13 +150,31 @@ def building_centroid_to_nearest_connector() -> None:
             distance_col="distance_m",
         )
         .rename(columns={"id_left": "building_id", "id_right": "connector_id"})
-        .drop_duplicates(subset="building_id")[["building_id", "connector_id", "distance_m"]]
+        .drop_duplicates(subset="building_id")
         .reset_index(drop=True)
     )
 
-    out_path = "data/building_to_connector.parquet"
-    result.to_parquet(out_path, index=False)
-    print(f"Saved {len(result):,} rows to {out_path}")
+    connector_points = connectors[["id", "geometry"]].rename(
+        columns={"id": "connector_id", "geometry": "connector_geometry"}
+    )
+    nearest = nearest.merge(connector_points, on="connector_id", how="left")
+    nearest["geometry"] = nearest.apply(
+        lambda row: LineString([row["geometry"], row["connector_geometry"]]),
+        axis=1,
+    )
+
+    line_result = gpd.GeoDataFrame(
+        nearest[["building_id", "connector_id", "distance_m", "geometry"]],
+        geometry="geometry",
+        crs=centroids.crs,
+    )
+
+    parquet_path = "data/building_to_connector_lines.parquet"
+    gpkg_path = "data/building_to_connector_lines.gpkg"
+    line_result.to_parquet(parquet_path, index=False)
+    line_result.to_file(gpkg_path, driver="GPKG")
+    print(f"Saved {len(line_result):,} rows to {parquet_path}")
+    print(f"Saved {len(line_result):,} rows to {gpkg_path}")
 
 
 if __name__ == "__main__":
