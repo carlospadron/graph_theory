@@ -1,5 +1,7 @@
 # graph_theory
-Research and Development on graph theory issues.
+Research and Development on graph optimization, comparing reinforcement learning approaches against bespoke algorithms.
+
+The repository currently includes data preparation scripts for Overture Maps transportation and building data that will feed graph construction, nearest-neighbor matching, and other optimization experiments.
 
 
 # Data
