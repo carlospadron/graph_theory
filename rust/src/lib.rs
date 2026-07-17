@@ -1,5 +1,7 @@
+pub mod io;
+
 use petgraph::graph::{Graph, NodeIndex};
-use petgraph::Undirected;
+use petgraph::{Directed, Undirected};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -50,10 +52,18 @@ pub enum Edge {
 }
 
 pub type SpatialGraph = Graph<Node, Edge, Undirected>;
+pub type DirectedSpatialGraph = Graph<Node, Edge, Directed>;
 
 #[derive(Debug, Clone)]
 pub struct BuiltGraph {
     pub graph: SpatialGraph,
+    pub connector_nodes: HashMap<String, NodeIndex>,
+    pub building_nodes: HashMap<String, NodeIndex>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DirectedBuiltGraph {
+    pub graph: DirectedSpatialGraph,
     pub connector_nodes: HashMap<String, NodeIndex>,
     pub building_nodes: HashMap<String, NodeIndex>,
 }
@@ -174,6 +184,91 @@ pub fn build_graph(
     }
 
     Ok(BuiltGraph {
+        graph,
+        connector_nodes,
+        building_nodes,
+    })
+}
+
+/// Build a directed graph from the same inputs as `build_graph`.
+/// Road edges are added in both directions (bidirectional by default).
+/// Building access edges are also bidirectional.
+pub fn build_directed_graph(
+    roads: &[RoadSegment],
+    connectors: &[Connector],
+    buildings: &[Building],
+    building_links: &[BuildingConnectorLink],
+) -> Result<DirectedBuiltGraph, BuildGraphError> {
+    let mut graph: DirectedSpatialGraph = Graph::new();
+    let mut connector_nodes: HashMap<String, NodeIndex> = HashMap::new();
+    let mut building_nodes: HashMap<String, NodeIndex> = HashMap::new();
+
+    for connector in connectors {
+        if connector_nodes.contains_key(&connector.id) {
+            return Err(BuildGraphError::DuplicateConnector(connector.id.clone()));
+        }
+        let node = graph.add_node(Node::Connector {
+            id: connector.id.clone(),
+            x: connector.x,
+            y: connector.y,
+        });
+        connector_nodes.insert(connector.id.clone(), node);
+    }
+
+    for building in buildings {
+        if building_nodes.contains_key(&building.id) {
+            return Err(BuildGraphError::DuplicateBuilding(building.id.clone()));
+        }
+        let node = graph.add_node(Node::Building {
+            id: building.id.clone(),
+            x: building.x,
+            y: building.y,
+        });
+        building_nodes.insert(building.id.clone(), node);
+    }
+
+    for road in roads {
+        if road.connectors.len() < 2 {
+            return Err(BuildGraphError::RoadSegmentTooShort(road.id.clone()));
+        }
+        let mut refs = road.connectors.clone();
+        refs.sort_by(|a, b| a.at.total_cmp(&b.at));
+
+        for pair in refs.windows(2) {
+            let from_idx = *connector_nodes
+                .get(&pair[0].connector_id)
+                .ok_or_else(|| BuildGraphError::MissingConnector(pair[0].connector_id.clone()))?;
+            let to_idx = *connector_nodes
+                .get(&pair[1].connector_id)
+                .ok_or_else(|| BuildGraphError::MissingConnector(pair[1].connector_id.clone()))?;
+
+            let fraction = (pair[1].at - pair[0].at).abs();
+            let length_m = road.length_m * fraction;
+            let edge = Edge::Road {
+                segment_id: road.id.clone(),
+                length_m,
+            };
+            // Both directions — restrict to forward only once access restrictions are modelled.
+            graph.add_edge(from_idx, to_idx, edge.clone());
+            graph.add_edge(to_idx, from_idx, edge);
+        }
+    }
+
+    for link in building_links {
+        let building_idx = *building_nodes
+            .get(&link.building_id)
+            .ok_or_else(|| BuildGraphError::MissingBuilding(link.building_id.clone()))?;
+        let connector_idx = *connector_nodes
+            .get(&link.connector_id)
+            .ok_or_else(|| BuildGraphError::MissingConnector(link.connector_id.clone()))?;
+        let edge = Edge::BuildingAccess {
+            distance_m: link.distance_m,
+        };
+        graph.add_edge(building_idx, connector_idx, edge.clone());
+        graph.add_edge(connector_idx, building_idx, edge);
+    }
+
+    Ok(DirectedBuiltGraph {
         graph,
         connector_nodes,
         building_nodes,

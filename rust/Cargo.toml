@@ -3,5 +3,14 @@ name = "graph_builder"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "build_graph"
+path = "src/main.rs"
+
+[lib]
+name = "graph_builder"
+path = "src/lib.rs"
+
 [dependencies]
 petgraph = "0.6"
+csv = "1"

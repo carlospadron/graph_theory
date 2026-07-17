@@ -177,5 +177,57 @@ def building_centroid_to_nearest_connector() -> None:
     print(f"Saved {len(line_result):,} rows to {gpkg_path}")
 
 
+def prepare_rust_graph() -> None:
+    """Export simplified CSV files that the Rust graph builder consumes."""
+    import geopandas as gpd
+
+    conn = _setup_conn()
+
+    print("Exporting connector positions (id, x, y)...")
+    conn.execute(
+        """
+        COPY (
+            SELECT id, ST_X(geometry) AS x, ST_Y(geometry) AS y
+            FROM read_parquet('data/oxford_connectors.parquet')
+        ) TO 'data/rust_connectors.csv' (HEADER, DELIMITER ',')
+        """
+    )
+
+    print("Exporting building positions (id, x, y)...")
+    conn.execute(
+        """
+        COPY (
+            SELECT id, ST_X(geometry) AS x, ST_Y(geometry) AS y
+            FROM read_parquet('data/oxford_building_centroids.parquet')
+        ) TO 'data/rust_buildings.csv' (HEADER, DELIMITER ',')
+        """
+    )
+
+    print("Exporting road connector references (road_id, connector_id, at)...")
+    conn.execute(
+        """
+        COPY (
+            SELECT
+                s.id AS road_id,
+                UNNEST(s.connectors).connector_id AS connector_id,
+                UNNEST(s.connectors)."at" AS at
+            FROM read_parquet('data/oxford_segments.parquet') s
+        ) TO 'data/rust_road_connector_refs.csv' (HEADER, DELIMITER ',')
+        """
+    )
+
+    print("Exporting building links (building_id, connector_id, distance_m)...")
+    links = gpd.read_parquet("data/building_to_connector_lines.parquet")
+    links[["building_id", "connector_id", "distance_m"]].to_csv(
+        "data/rust_building_links.csv", index=False
+    )
+
+    print("CSV files ready for Rust graph builder:")
+    print("  data/rust_connectors.csv")
+    print("  data/rust_buildings.csv")
+    print("  data/rust_road_connector_refs.csv")
+    print("  data/rust_building_links.csv")
+
+
 if __name__ == "__main__":
     extract_routes()

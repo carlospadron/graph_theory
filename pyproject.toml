@@ -17,6 +17,7 @@ extract-connectors = "graph_theory.extract_overture_data:extract_connectors"
 extract-buildings = "graph_theory.extract_overture_data:extract_buildings"
 extract-building-centroids = "graph_theory.extract_overture_data:extract_building_centroids"
 building-to-connector = "graph_theory.extract_overture_data:building_centroid_to_nearest_connector"
+prepare-rust-graph = "graph_theory.extract_overture_data:prepare_rust_graph"
 
 [tool.uv]
 package = true
