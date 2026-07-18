@@ -268,3 +268,78 @@ mod tests {
         assert!(solutions.iter().any(|s| s.selected.len() == 2));
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct ClusterSolution {
+    pub selected_clusters: Vec<usize>,
+    pub total_buildings_yield: usize,
+    pub tree_weight: f64,
+}
+
+/// Cluster-Level Greedy Pareto Search
+/// 
+/// Instead of evaluating individual buildings, this evaluates entire clusters.
+/// At each step, it adds the cluster that provides the best ratio of:
+/// (Cost to connect the cluster hub to the existing tree) / (Number of buildings in the cluster)
+/// 
+/// `clusters_map` is a map from cluster_id to a list of building NodeIndexes.
+pub fn greedy_cluster_pareto(
+    graph: &BuiltGraph,
+    clusters_map: &std::collections::HashMap<usize, Vec<NodeIndex>>,
+) -> Vec<ClusterSolution> {
+    let mut remaining_clusters: Vec<usize> = clusters_map.keys().copied().collect();
+    let mut selected_centers: Vec<NodeIndex> = Vec::new();
+    let mut selected_clusters: Vec<usize> = Vec::new();
+    let mut solutions: Vec<ClusterSolution> = Vec::new();
+    let mut total_buildings = 0;
+
+    // Pick a "hub" for each cluster. For simplicity, we just take the first building in the list.
+    let mut cluster_hubs: std::collections::HashMap<usize, NodeIndex> = std::collections::HashMap::new();
+    for (&id, nodes) in clusters_map {
+        if let Some(&hub) = nodes.first() {
+            cluster_hubs.insert(id, hub);
+        }
+    }
+
+    while !remaining_clusters.is_empty() {
+        let (best_idx, best_w, best_yield) = remaining_clusters
+            .iter()
+            .enumerate()
+            .map(|(i, &cluster_id)| {
+                let hub = cluster_hubs[&cluster_id];
+                let b_count = clusters_map[&cluster_id].len();
+
+                let mut trial = selected_centers.clone();
+                trial.push(hub);
+                let new_weight = steiner_weight(graph, &trial);
+                
+                // We want the lowest marginal cost per building yield
+                // If it's the first step, previous weight is 0.
+                let prev_weight = if solutions.is_empty() { 0.0 } else { solutions.last().unwrap().tree_weight };
+                let marginal_cost = new_weight - prev_weight;
+                
+                let ratio = marginal_cost / (b_count as f64);
+                
+                (i, new_weight, b_count, ratio)
+            })
+            // Min by ratio
+            .min_by(|a, b| a.3.partial_cmp(&b.3).unwrap())
+            .map(|(i, w, y, _)| (i, w, y))
+            .unwrap();
+
+        let chosen_cluster = remaining_clusters.swap_remove(best_idx);
+        let chosen_hub = cluster_hubs[&chosen_cluster];
+
+        selected_centers.push(chosen_hub);
+        selected_clusters.push(chosen_cluster);
+        total_buildings += best_yield;
+
+        solutions.push(ClusterSolution {
+            selected_clusters: selected_clusters.clone(),
+            total_buildings_yield: total_buildings,
+            tree_weight: best_w,
+        });
+    }
+
+    solutions
+}

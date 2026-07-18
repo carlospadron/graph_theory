@@ -1,4 +1,4 @@
-optimise programatically
+check how the distance between clusters is being done. Does it take a representative node?
 return the nodes and edges to build a map
 ensure that at least one source remains
 increase size of graph
