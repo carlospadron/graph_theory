@@ -1,4 +1,6 @@
+pub mod clustering;
 pub mod io;
+pub mod optimizer;
 
 use petgraph::graph::{Graph, NodeIndex};
 use petgraph::{Directed, Undirected};

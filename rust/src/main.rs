@@ -1,4 +1,4 @@
-use graph_builder::io;
+use graph_builder::{io, clustering};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -33,13 +33,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         built.graph.edge_count()
     );
 
-    println!("\nBuilding directed graph...");
-    let directed = graph_builder::build_directed_graph(&roads, &connectors, &buildings, &links)?;
-    println!(
-        "  nodes: {}   edges: {}",
-        directed.graph.node_count(),
-        directed.graph.edge_count()
-    );
+    // Run clustering
+    println!("\nRunning building clustering (max distance: 100m)...");
+    let clusters = clustering::cluster_buildings(&built, 100.0);
+    println!("Created {} clusters", clusters.values().max().unwrap_or(&0) + 1);
+
+    // Save clusters to CSV
+    println!("Saving clusters to data/rust_clusters.csv...");
+    let mut wtr = csv::Writer::from_path(data.join("rust_clusters.csv"))?;
+    wtr.write_record(&["building_id", "cluster_id"])?;
+    for (node_idx, cluster_id) in &clusters {
+        if let graph_builder::Node::Building { id, .. } = &built.graph[*node_idx] {
+            wtr.write_record(&[id, &cluster_id.to_string()])?;
+        }
+    }
+    wtr.flush()?;
+    println!("Clusters saved successfully.");
 
     Ok(())
 }

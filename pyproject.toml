@@ -18,6 +18,7 @@ extract-buildings = "graph_theory.extract_overture_data:extract_buildings"
 extract-building-centroids = "graph_theory.extract_overture_data:extract_building_centroids"
 building-to-connector = "graph_theory.extract_overture_data:building_centroid_to_nearest_connector"
 prepare-rust-graph = "graph_theory.extract_overture_data:prepare_rust_graph"
+cluster-buildings = "graph_theory.cluster_buildings:main"
 
 [tool.uv]
 package = true
@@ -25,3 +26,9 @@ package = true
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pandas>=3.0.3",
+    "pytest>=9.1.1",
+]
