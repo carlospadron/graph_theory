@@ -1,5 +1,6 @@
-check how the distance between clusters is being done. Does it take a representative node?
-return the nodes and edges to build a map
+[x] return the nodes and edges to build a map
+[x] paths cross unselected clusters
+[x] use actual edges for map
 ensure that at least one source remains
 increase size of graph
 put limits on how far a source can be and total of nodes per source

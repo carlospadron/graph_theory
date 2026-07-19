@@ -1,3 +1,4 @@
+pub mod reduced_graph;
 pub mod clustering;
 pub mod io;
 pub mod optimizer;

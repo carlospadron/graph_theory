@@ -343,3 +343,93 @@ pub fn greedy_cluster_pareto(
 
     solutions
 }
+
+/// Steiner tree weight approximation strictly on the Reduced Graph.
+/// 
+/// Because nodes are clusters, and edges represent shortest boundary-to-boundary 
+/// distances, this is extremely fast and natively represents our cluster metrics.
+pub fn reduced_steiner_weight(
+    graph: &crate::reduced_graph::ReducedGraph,
+    terminals: &[NodeIndex],
+) -> f64 {
+    let n = terminals.len();
+    if n < 2 {
+        return 0.0;
+    }
+
+    let mut dist = vec![vec![f64::INFINITY; n]; n];
+    for (i, &src) in terminals.iter().enumerate() {
+        dist[i][i] = 0.0;
+        let sp = dijkstra(graph, src, None, |e| e.weight().distance_m);
+        for (j, &dst) in terminals.iter().enumerate() {
+            if let Some(&d) = sp.get(&dst) {
+                dist[i][j] = d;
+            }
+        }
+    }
+
+    prim_mst(&dist)
+}
+
+#[derive(Debug, Clone)]
+pub struct ReducedClusterSolution {
+    pub selected_node_indices: Vec<NodeIndex>,
+    pub selected_cluster_ids: Vec<usize>,
+    pub total_buildings_yield: usize,
+    pub tree_weight: f64,
+}
+
+/// Greedy Pareto Search running directly and natively on the Reduced Graph.
+/// 
+/// It optimizes using boundary-to-boundary distance values, resolving which
+/// clusters yield the highest density coverage compared to their road cost.
+pub fn greedy_reduced_graph_pareto(
+    reduced_graph: &crate::reduced_graph::ReducedGraph,
+    candidate_indices: &[NodeIndex],
+) -> Vec<ReducedClusterSolution> {
+    let mut remaining: Vec<NodeIndex> = candidate_indices.to_vec();
+    let mut selected: Vec<NodeIndex> = Vec::new();
+    let mut solutions: Vec<ReducedClusterSolution> = Vec::new();
+    let mut total_buildings = 0;
+
+    while !remaining.is_empty() {
+        let (best_i, best_w, best_yield) = remaining
+            .iter()
+            .enumerate()
+            .map(|(i, &node)| {
+                let cluster_data = &reduced_graph[node];
+                let b_count = cluster_data.size;
+
+                let mut trial = selected.clone();
+                trial.push(node);
+                let new_weight = reduced_steiner_weight(reduced_graph, &trial);
+
+                let prev_weight = if solutions.is_empty() { 0.0 } else { solutions.last().unwrap().tree_weight };
+                let marginal_cost = new_weight - prev_weight;
+
+                let ratio = marginal_cost / (b_count as f64);
+                (i, new_weight, b_count, ratio)
+            })
+            .min_by(|a, b| a.3.partial_cmp(&b.3).unwrap())
+            .map(|(i, w, y, _)| (i, w, y))
+            .unwrap();
+
+        let chosen_node = remaining.swap_remove(best_i);
+        selected.push(chosen_node);
+        total_buildings += best_yield;
+
+        let selected_cluster_ids: Vec<usize> = selected
+            .iter()
+            .map(|&idx| reduced_graph[idx].cluster_id)
+            .collect();
+
+        solutions.push(ReducedClusterSolution {
+            selected_node_indices: selected.clone(),
+            selected_cluster_ids,
+            total_buildings_yield: total_buildings,
+            tree_weight: best_w,
+        });
+    }
+
+    solutions
+}

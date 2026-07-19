@@ -19,6 +19,8 @@ extract-building-centroids = "graph_theory.extract_overture_data:extract_buildin
 building-to-connector = "graph_theory.extract_overture_data:building_centroid_to_nearest_connector"
 prepare-rust-graph = "graph_theory.extract_overture_data:prepare_rust_graph"
 cluster-buildings = "graph_theory.cluster_buildings:main"
+create-reduced-gpkg = "graph_theory.create_reduced_gpkg:main"
+create-optimized-outputs = "graph_theory.create_optimized_outputs:main"
 
 [tool.uv]
 package = true
