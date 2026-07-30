@@ -30,77 +30,71 @@ Run the steps below in order. Use `uv run <command>` for all Python steps.
 
 ```bash
 cd rust
-cargo run --release --bin build_graph [OPTION]
+cargo run --release
 ```
 
-Reads the four CSVs and builds two graphs:
-- **Undirected** (`build_graph`) — for standard graph optimization.
-- **Directed bidirectional** (`build_directed_graph`) — all edges added in both directions; ready for one-way street modelling once Overture access restrictions are applied.
+Reads the four CSVs and builds the undirected multi-graph. Edge weights between consecutive connectors are computed using the Haversine formula from actual connector positions, not from geometry length approximations.
 
-Edge weights between consecutive connectors are computed using the Haversine formula from actual connector positions, not from geometry length approximations.
+## 5. Building Clustering & Dimension Reduction (Coarsening)
 
-### Candidate selection (command-line options)
+To make optimization over 167,000+ buildings computationally tractable, we implement a macro-level **dimension reduction** framework using graph coarsening:
 
-Pass an option to specify which nodes to optimize over. If none is provided, defaults to the first 12 connectors with brute-force.
+1. **Deterministic Building Clustering:** 
+   We group adjacent buildings using a deterministic **single-linkage clustering** approach along the road network:
+   - Evaluates connected components with a Disjoint-Set (Union-Find) data structure.
+   - Two buildings belong to the same cluster if they are connected by a path on the road network strictly $\leq 100$ meters.
+   - Building-to-connector access distances are treated as $0.0$ meters to ensure linkage is strictly evaluated along the physical roads.
+   - Generates deterministic, bounded clusters mapping out dense urban blocks, saving them to `data/rust_clusters.csv`.
+   
+   To visualize these clusters in QGIS, run:
+   - `uv run cluster-buildings` — Merges the cluster mappings back with original building geometries to output `data/clustered_buildings.gpkg`.
 
-- `--targets-file PATH` — Read node IDs from a file (one per line; IDs can be connector or building IDs from the CSVs)
-- `--all-buildings` — Optimize over all buildings (greedy Pareto)
-- `--all-connectors` — Optimize over all connectors (greedy Pareto)  
-- `--first-n-connectors N` — Optimize over first N connectors (brute if N ≤ 20, else greedy)
-- `--first-n-buildings N` — Optimize over first N buildings (brute if N ≤ 20, else greedy)
-- `--help` — Show usage
+2. **Graph Coarsening (Wavefront Propagation):**
+   The 255k-node road network is compressed into a sparse, cluster-level **Reduced Graph**:
+   - Runs a multi-source Dijkstra / wavefront propagation simultaneously from all cluster boundaries to identify exact shortest road distances between adjacent clusters.
+   - Eliminates redundant intermediate street intersections, leaving a high-fidelity coarsened graph where nodes are clusters and edges are shortest boundary-to-boundary connection weights.
+   
+   To export this reduced topology for visualization, run:
+   - `uv run create-reduced-gpkg` — Converts the coarsened node and boundary edges into `data/reduced_clusters.gpkg`.
 
-**Examples:**
-```bash
-# Select specific nodes from a file
-cargo run --release --bin build_graph -- --targets-file targets.txt
-
-# Select first 8 connectors
-cargo run --release --bin build_graph -- --first-n-connectors 8
-
-# Optimize all buildings
-cargo run --release --bin build_graph -- --all-buildings
-```
-
-The targets file format is simple — one node ID per line:
-```
-connector_abc123
-building_xyz789
-connector_def456
-```
+---
 
 # Optimization
 
-The goal is to select a subset of graph nodes (buildings/connectors) such that:
-- The number of selected nodes is maximized.
-- The cost of connecting them via the road network (Steiner tree weight) is minimized.
+The goal is to identify Pareto-optimal trade-offs between two conflicting objectives:
+1. **Maximizing building coverage** (total yield of buildings reached).
+2. **Minimizing connection cost** (the Steiner Tree weight of road segments required to connect selected clusters).
 
-These objectives conflict, so the solution is a **Pareto front** — a set of non-dominated trade-off points.
+## Coarse-to-Fine Optimization Pipeline
 
-## Algorithms
+With the coarsened `ReducedGraph`, the optimization pipeline natively solves the exact topology:
 
-The Rust optimizer module (`rust/src/optimizer.rs`) implements three approaches:
+1. **Super-Node Selection:** The optimizer sorts all 6,614 clusters by size and targets candidates (such as the top 15 largest clusters).
+2. **Native Reduced Optimization:** It runs a greedy Pareto search directly on the `ReducedGraph`. The Steiner tree weight is computed using boundary-to-boundary metrics, executing in milliseconds:
+   - `optimizer::greedy_reduced_graph_pareto` — Solves cluster selections and produces a sequence of Pareto solutions.
+3. **Exact Path Reconstruction:** For the final selected solution, the binary traces back down to the micro-level road network. It executes a Dijkstra path-tracing sweep on the full 255k-node graph to collect the precise, unique Overture road segment IDs traversed to connect all selected hubs, saving them to `data/optimized_tree_segments.csv`.
+
+## Output Generation & Spatial Visualization
+
+Translate the optimized graph selections back into spatial GIS-ready layers:
+- `uv run create-optimized-outputs` — Reads the selected building IDs and active road segment IDs, fetches original geometries, and generates:
+  - **`data/optimized_selected_buildings.gpkg`** — Original footprints of all buildings in the selected clusters.
+  - **`data/optimized_routing_tree.gpkg`** — High-fidelity curved original road path geometries tracing out the exact Steiner routing tree.
+
+Drag these GeoPackages directly into QGIS for instantaneous styling and visual validation!
+
+## Algorithms (Reference)
+
+The Rust optimizer module (`rust/src/optimizer.rs`) implements several core graph algorithms:
 
 | Algorithm | Approach | Complexity | Use case |
 |-----------|----------|-----------|----------|
-| `brute_force` | Enumerate all 2^n subsets, compute Steiner tree for each | O(2^n · n · V log V) | n ≤ ~20 candidates; optimal Pareto front |
-| `greedy_pareto` | Iteratively add the cheapest candidate | O(n² · V log V) | Large candidate sets (100s); greedy approximation |
-| `steiner_weight` | Metric closure + Prim's MST (2-approximation for Steiner tree) | O(n · V log V) per call | Core function; all-pairs Dijkstra + MST |
-
-The binary selects brute-force for n ≤ 20 and greedy for larger sets.
+| `brute_force` | Enumerate all $2^n$ subsets, compute exact Steiner tree for each | $O(2^n \cdot n^2 \cdot V \log V)$ | Small candidate sets ($n \le 20$); exact baseline |
+| `greedy_pareto` | Iterative cheapest-ratio expansion on the full graph | $O(n^3 \cdot V \log V)$ | Intermediate candidate sets on the micro-graph |
+| `greedy_reduced_graph_pareto` | Native greedy Pareto search on the Coarsened Reduced Graph | $O(n^3)$ | Extremely fast macro-level routing over thousands of clusters |
+| `steiner_weight` / `reduced_steiner_weight` | Metric closure + Prim's MST (2-approximation for Steiner Tree) | $O(n \cdot V \log V)$ | Core routing metric evaluator |
 
 # Notes
 - Bounding box and Overture release URLs are configured in `src/graph_theory/extract_overture_data.py`.
-- The Rust crate is in `rust/` and depends on `petgraph` and `csv`.
-- GeoPackage exports cast complex DuckDB types (struct arrays) to VARCHAR so GDAL can write them.
-
-
-## 5. Building Clustering
-
-We implemented a **single-linkage clustering** approach on the road graph network to group adjacent buildings:
-- `cluster_buildings` (in Rust) — Finds exact connected components. Two buildings belong to the same cluster if they are connected by a path on the road network strictly $\leq$ 100 meters. (Building access distance is ignored, meaning distance is strictly evaluated on the actual road network).
-- This creates deterministically chained clusters mapping out dense urban blocks.
-- Outputs the grouping to `data/rust_clusters.csv`.
-
-**Merge Clusters with Geometry:**
-- `uv run cluster-buildings` — Merges the `data/rust_clusters.csv` mapping back into `data/oxford_buildings.gpkg` and outputs a standalone file `data/clustered_buildings.gpkg` that you can directly load into QGIS for spatial visualization.
+- The Rust crate is located in `rust/` and depends on `petgraph` and `csv`.
+- GeoPackage exports natively resolve and reproject `OGC:CRS84` coordinate types.
