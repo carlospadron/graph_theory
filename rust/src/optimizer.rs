@@ -1,6 +1,9 @@
 use crate::{BuiltGraph, Edge};
 use petgraph::algo::dijkstra;
 use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 fn edge_weight(e: &Edge) -> f64 {
     match e {
@@ -379,6 +382,238 @@ pub struct ReducedClusterSolution {
     pub tree_weight: f64,
 }
 
+#[derive(Debug, Clone)]
+struct BudgetState {
+    selected: Vec<NodeIndex>,
+    selected_set: HashSet<NodeIndex>,
+    total_buildings: usize,
+    tree_weight: f64,
+    ratio: f64,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct QueueState {
+    cost: f64,
+    node: NodeIndex,
+}
+
+impl Eq for QueueState {}
+
+impl Ord for QueueState {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .cost
+            .partial_cmp(&self.cost)
+            .unwrap_or(Ordering::Equal)
+    }
+}
+
+impl PartialOrd for QueueState {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn reduced_multi_source_distances(
+    graph: &crate::reduced_graph::ReducedGraph,
+    sources: &HashSet<NodeIndex>,
+) -> HashMap<NodeIndex, f64> {
+    let mut dist: HashMap<NodeIndex, f64> = HashMap::new();
+    let mut heap = BinaryHeap::new();
+
+    for &src in sources {
+        dist.insert(src, 0.0);
+        heap.push(QueueState { cost: 0.0, node: src });
+    }
+
+    while let Some(QueueState { cost, node }) = heap.pop() {
+        if cost > *dist.get(&node).unwrap_or(&f64::INFINITY) {
+            continue;
+        }
+
+        for edge in graph.edges(node) {
+            let next = edge.target();
+            let next_cost = cost + edge.weight().distance_m;
+            let is_better = dist.get(&next).map_or(true, |&d| next_cost < d);
+            if is_better {
+                dist.insert(next, next_cost);
+                heap.push(QueueState {
+                    cost: next_cost,
+                    node: next,
+                });
+            }
+        }
+    }
+
+    dist
+}
+
+fn score_state(weight_m: f64, buildings: usize) -> f64 {
+    if buildings == 0 {
+        return f64::INFINITY;
+    }
+    weight_m / (buildings as f64)
+}
+
+/// Source-seeded budgeted branch search.
+///
+/// - Starts from source clusters.
+/// - Expands by adding one cluster at a time.
+/// - Prunes branches when metres/building exceeds `budget_m_per_building * epsilon`.
+/// - Runs for `iterations` rounds and keeps the best budget-feasible state.
+pub fn budgeted_source_search(
+    reduced_graph: &crate::reduced_graph::ReducedGraph,
+    source_nodes: &[NodeIndex],
+    budget_m_per_building: f64,
+    epsilon: f64,
+    iterations: usize,
+) -> Option<ReducedClusterSolution> {
+    if source_nodes.is_empty() {
+        return None;
+    }
+
+    let mut unique_sources: Vec<NodeIndex> = Vec::new();
+    let mut seen_sources = HashSet::new();
+    for &src in source_nodes {
+        if seen_sources.insert(src) {
+            unique_sources.push(src);
+        }
+    }
+
+    let source_set: HashSet<NodeIndex> = unique_sources.iter().copied().collect();
+    let source_buildings: usize = unique_sources.iter().map(|&n| reduced_graph[n].size).sum();
+    let source_weight = reduced_steiner_weight(reduced_graph, &unique_sources);
+    let source_ratio = score_state(source_weight, source_buildings);
+
+    let mut beam: Vec<BudgetState> = vec![BudgetState {
+        selected: unique_sources.clone(),
+        selected_set: source_set,
+        total_buildings: source_buildings,
+        tree_weight: source_weight,
+        ratio: source_ratio,
+    }];
+
+    let mut best: Option<BudgetState> = None;
+    let hard_limit = budget_m_per_building * epsilon;
+    let beam_width = 24usize;
+    let candidate_fanout = 32usize;
+
+    if source_ratio <= budget_m_per_building {
+        best = Some(beam[0].clone());
+    }
+
+    for _ in 0..iterations {
+        let mut next_beam: Vec<BudgetState> = Vec::new();
+
+        for state in &beam {
+            let dists = reduced_multi_source_distances(reduced_graph, &state.selected_set);
+
+            let mut ranked: Vec<(NodeIndex, f64, usize, f64)> = reduced_graph
+                .node_indices()
+                .filter(|n| !state.selected_set.contains(n))
+                .filter_map(|n| {
+                    let &dist_m = dists.get(&n)?;
+                    let size = reduced_graph[n].size;
+                    if size == 0 {
+                        return None;
+                    }
+                    let connect_ratio = dist_m / (size as f64);
+                    Some((n, dist_m, size, connect_ratio))
+                })
+                .collect();
+
+            ranked.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(Ordering::Equal));
+
+            for (node, _, _, _) in ranked.into_iter().take(candidate_fanout) {
+                let mut trial_selected = state.selected.clone();
+                trial_selected.push(node);
+
+                let trial_weight = reduced_steiner_weight(reduced_graph, &trial_selected);
+                if !trial_weight.is_finite() {
+                    continue;
+                }
+
+                let trial_buildings = state.total_buildings + reduced_graph[node].size;
+                let trial_ratio = score_state(trial_weight, trial_buildings);
+                if !trial_ratio.is_finite() || trial_ratio > hard_limit {
+                    continue;
+                }
+
+                let mut trial_set = state.selected_set.clone();
+                trial_set.insert(node);
+
+                let candidate_state = BudgetState {
+                    selected: trial_selected,
+                    selected_set: trial_set,
+                    total_buildings: trial_buildings,
+                    tree_weight: trial_weight,
+                    ratio: trial_ratio,
+                };
+
+                if trial_ratio <= budget_m_per_building {
+                    let replace = match &best {
+                        None => true,
+                        Some(curr) => {
+                            candidate_state.total_buildings > curr.total_buildings
+                                || (candidate_state.total_buildings == curr.total_buildings
+                                    && candidate_state.tree_weight < curr.tree_weight)
+                        }
+                    };
+                    if replace {
+                        best = Some(candidate_state.clone());
+                    }
+                }
+
+                next_beam.push(candidate_state);
+            }
+        }
+
+        if next_beam.is_empty() {
+            break;
+        }
+
+        next_beam.sort_by(|a, b| {
+            a.ratio
+                .partial_cmp(&b.ratio)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| b.total_buildings.cmp(&a.total_buildings))
+                .then_with(|| {
+                    a.tree_weight
+                        .partial_cmp(&b.tree_weight)
+                        .unwrap_or(Ordering::Equal)
+                })
+        });
+
+        if next_beam.len() > beam_width {
+            next_beam.truncate(beam_width);
+        }
+
+        beam = next_beam;
+    }
+
+    let final_state = best.or_else(|| {
+        beam.into_iter().min_by(|a, b| {
+            a.ratio
+                .partial_cmp(&b.ratio)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| b.total_buildings.cmp(&a.total_buildings))
+        })
+    })?;
+
+    let selected_cluster_ids = final_state
+        .selected
+        .iter()
+        .map(|&idx| reduced_graph[idx].cluster_id)
+        .collect();
+
+    Some(ReducedClusterSolution {
+        selected_node_indices: final_state.selected,
+        selected_cluster_ids,
+        total_buildings_yield: final_state.total_buildings,
+        tree_weight: final_state.tree_weight,
+    })
+}
+
 /// Greedy Pareto Search running directly and natively on the Reduced Graph.
 /// 
 /// It optimizes using boundary-to-boundary distance values, resolving which
@@ -393,7 +628,7 @@ pub fn greedy_reduced_graph_pareto(
     let mut total_buildings = 0;
 
     while !remaining.is_empty() {
-        let (best_i, best_w, best_yield) = remaining
+        let best = remaining
             .iter()
             .enumerate()
             .map(|(i, &node)| {
@@ -410,9 +645,14 @@ pub fn greedy_reduced_graph_pareto(
                 let ratio = marginal_cost / (b_count as f64);
                 (i, new_weight, b_count, ratio)
             })
+            .filter(|(_, w, _, ratio)| w.is_finite() && ratio.is_finite())
             .min_by(|a, b| a.3.partial_cmp(&b.3).unwrap())
-            .map(|(i, w, y, _)| (i, w, y))
-            .unwrap();
+            .map(|(i, w, y, _)| (i, w, y));
+
+        let Some((best_i, best_w, best_yield)) = best else {
+            // Remaining candidates cannot be connected to current selection.
+            break;
+        };
 
         let chosen_node = remaining.swap_remove(best_i);
         selected.push(chosen_node);

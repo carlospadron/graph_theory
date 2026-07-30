@@ -60,7 +60,7 @@ pub type ReducedGraph = Graph<ReducedClusterNode, ReducedClusterEdge, Undirected
 pub fn build_reduced_graph(
     graph: &BuiltGraph,
     building_clusters: &HashMap<NodeIndex, usize>,
-) -> ReducedGraph {
+) -> (ReducedGraph, HashMap<NodeIndex, usize>) {
     let mut clusters_map: HashMap<usize, Vec<NodeIndex>> = HashMap::new();
     for (&node_idx, &cluster_id) in building_clusters {
         clusters_map.entry(cluster_id).or_default().push(node_idx);
@@ -159,5 +159,10 @@ pub fn build_reduced_graph(
         }
     }
 
-    new_graph
+    let nearest_cluster_by_node: HashMap<NodeIndex, usize> = dist_map
+        .into_iter()
+        .map(|(node_idx, (cluster_id, _))| (node_idx, cluster_id))
+        .collect();
+
+    (new_graph, nearest_cluster_by_node)
 }

@@ -203,14 +203,15 @@ def prepare_rust_graph() -> None:
         """
     )
 
-    print("Exporting road connector references (road_id, connector_id, at)...")
+    print("Exporting road connector references (road_id, connector_id, at, road_length_m)...")
     conn.execute(
         """
         COPY (
             SELECT
                 s.id AS road_id,
                 UNNEST(s.connectors).connector_id AS connector_id,
-                UNNEST(s.connectors)."at" AS at
+                UNNEST(s.connectors)."at" AS at,
+                ST_Length_Spheroid(s.geometry) AS road_length_m
             FROM read_parquet('data/oxford_segments.parquet') s
         ) TO 'data/rust_road_connector_refs.csv' (HEADER, DELIMITER ',')
         """
