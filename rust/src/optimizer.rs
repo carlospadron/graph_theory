@@ -387,7 +387,7 @@ struct BudgetState {
     selected: Vec<NodeIndex>,
     selected_set: HashSet<NodeIndex>,
     total_buildings: usize,
-    tree_weight: f64,
+    connection_cost: f64,
     ratio: f64,
 }
 
@@ -414,11 +414,12 @@ impl PartialOrd for QueueState {
     }
 }
 
-fn reduced_multi_source_distances(
+fn reduced_multi_source_distances_with_parents(
     graph: &crate::reduced_graph::ReducedGraph,
     sources: &HashSet<NodeIndex>,
-) -> HashMap<NodeIndex, f64> {
+) -> (HashMap<NodeIndex, f64>, HashMap<NodeIndex, NodeIndex>) {
     let mut dist: HashMap<NodeIndex, f64> = HashMap::new();
+    let mut parent: HashMap<NodeIndex, NodeIndex> = HashMap::new();
     let mut heap = BinaryHeap::new();
 
     for &src in sources {
@@ -437,6 +438,7 @@ fn reduced_multi_source_distances(
             let is_better = dist.get(&next).map_or(true, |&d| next_cost < d);
             if is_better {
                 dist.insert(next, next_cost);
+                parent.insert(next, node);
                 heap.push(QueueState {
                     cost: next_cost,
                     node: next,
@@ -445,7 +447,34 @@ fn reduced_multi_source_distances(
         }
     }
 
-    dist
+    (dist, parent)
+}
+
+fn shortest_path_to_selected(
+    target: NodeIndex,
+    selected_set: &HashSet<NodeIndex>,
+    parent: &HashMap<NodeIndex, NodeIndex>,
+) -> Option<Vec<NodeIndex>> {
+    if selected_set.contains(&target) {
+        return Some(vec![target]);
+    }
+
+    let mut path = vec![target];
+    let mut curr = target;
+    let mut guard = 0usize;
+
+    while !selected_set.contains(&curr) {
+        let &p = parent.get(&curr)?;
+        path.push(p);
+        curr = p;
+        guard += 1;
+        if guard > 1_000_000 {
+            return None;
+        }
+    }
+
+    path.reverse();
+    Some(path)
 }
 
 fn score_state(weight_m: f64, buildings: usize) -> f64 {
@@ -482,14 +511,14 @@ pub fn budgeted_source_search(
 
     let source_set: HashSet<NodeIndex> = unique_sources.iter().copied().collect();
     let source_buildings: usize = unique_sources.iter().map(|&n| reduced_graph[n].size).sum();
-    let source_weight = reduced_steiner_weight(reduced_graph, &unique_sources);
-    let source_ratio = score_state(source_weight, source_buildings);
+    let source_connection_cost = 0.0;
+    let source_ratio = score_state(source_connection_cost, source_buildings);
 
     let mut beam: Vec<BudgetState> = vec![BudgetState {
         selected: unique_sources.clone(),
         selected_set: source_set,
         total_buildings: source_buildings,
-        tree_weight: source_weight,
+        connection_cost: source_connection_cost,
         ratio: source_ratio,
     }];
 
@@ -506,7 +535,8 @@ pub fn budgeted_source_search(
         let mut next_beam: Vec<BudgetState> = Vec::new();
 
         for state in &beam {
-            let dists = reduced_multi_source_distances(reduced_graph, &state.selected_set);
+            let (dists, parent) =
+                reduced_multi_source_distances_with_parents(reduced_graph, &state.selected_set);
 
             let mut ranked: Vec<(NodeIndex, f64, usize, f64)> = reduced_graph
                 .node_indices()
@@ -525,28 +555,42 @@ pub fn budgeted_source_search(
             ranked.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(Ordering::Equal));
 
             for (node, _, _, _) in ranked.into_iter().take(candidate_fanout) {
-                let mut trial_selected = state.selected.clone();
-                trial_selected.push(node);
-
-                let trial_weight = reduced_steiner_weight(reduced_graph, &trial_selected);
-                if !trial_weight.is_finite() {
+                let dist_from_selected = *dists.get(&node).unwrap_or(&f64::INFINITY);
+                if !dist_from_selected.is_finite() {
                     continue;
                 }
 
-                let trial_buildings = state.total_buildings + reduced_graph[node].size;
-                let trial_ratio = score_state(trial_weight, trial_buildings);
+                let Some(path_nodes) = shortest_path_to_selected(node, &state.selected_set, &parent) else {
+                    continue;
+                };
+
+                let mut trial_set = state.selected_set.clone();
+                let mut trial_selected = state.selected.clone();
+                let mut added_buildings = 0usize;
+
+                for path_node in path_nodes {
+                    if trial_set.insert(path_node) {
+                        trial_selected.push(path_node);
+                        added_buildings += reduced_graph[path_node].size;
+                    }
+                }
+
+                if added_buildings == 0 {
+                    continue;
+                }
+
+                let trial_buildings = state.total_buildings + added_buildings;
+                let trial_connection_cost = state.connection_cost + dist_from_selected;
+                let trial_ratio = score_state(trial_connection_cost, trial_buildings);
                 if !trial_ratio.is_finite() || trial_ratio > hard_limit {
                     continue;
                 }
-
-                let mut trial_set = state.selected_set.clone();
-                trial_set.insert(node);
 
                 let candidate_state = BudgetState {
                     selected: trial_selected,
                     selected_set: trial_set,
                     total_buildings: trial_buildings,
-                    tree_weight: trial_weight,
+                    connection_cost: trial_connection_cost,
                     ratio: trial_ratio,
                 };
 
@@ -556,7 +600,7 @@ pub fn budgeted_source_search(
                         Some(curr) => {
                             candidate_state.total_buildings > curr.total_buildings
                                 || (candidate_state.total_buildings == curr.total_buildings
-                                    && candidate_state.tree_weight < curr.tree_weight)
+                                    && candidate_state.connection_cost < curr.connection_cost)
                         }
                     };
                     if replace {
@@ -578,8 +622,8 @@ pub fn budgeted_source_search(
                 .unwrap_or(Ordering::Equal)
                 .then_with(|| b.total_buildings.cmp(&a.total_buildings))
                 .then_with(|| {
-                    a.tree_weight
-                        .partial_cmp(&b.tree_weight)
+                    a.connection_cost
+                        .partial_cmp(&b.connection_cost)
                         .unwrap_or(Ordering::Equal)
                 })
         });
@@ -606,11 +650,13 @@ pub fn budgeted_source_search(
         .map(|&idx| reduced_graph[idx].cluster_id)
         .collect();
 
+    let final_tree_weight = reduced_steiner_weight(reduced_graph, &final_state.selected);
+
     Some(ReducedClusterSolution {
         selected_node_indices: final_state.selected,
         selected_cluster_ids,
         total_buildings_yield: final_state.total_buildings,
-        tree_weight: final_state.tree_weight,
+        tree_weight: final_tree_weight,
     })
 }
 
